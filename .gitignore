@@ -1,0 +1,14 @@
+# Large raw source audio files (web MP3s are compressed in audio/)
+*.flac
+*.wav
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+
+# Vercel
+.vercel
+node_modules/
