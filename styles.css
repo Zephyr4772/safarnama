@@ -894,44 +894,52 @@ html.dark .seek-thumb {
 }
 
 /* First-Load Intro Choreography */
+html.intro-no-padding body,
 body.intro-no-padding {
   padding: 0 !important;
 }
 
+html.intro-no-padding .main,
 body.intro-no-padding .main {
   border-radius: 0 !important;
 }
 
+html.intro-hidden .site-title,
 body.intro-hidden .site-title {
   transform: translate3d(0, -110px, 0) !important;
   opacity: 0 !important;
   pointer-events: none !important;
 }
 
+html.intro-hidden .header,
 body.intro-hidden .header {
   transform: translate3d(0, -110px, 0) !important;
   opacity: 0 !important;
   pointer-events: none !important;
 }
 
+html.intro-hidden .dock,
 body.intro-hidden .dock {
   transform: translate3d(-50%, 150%, 0) !important;
   opacity: 0 !important;
   pointer-events: none !important;
 }
 
+html.intro-hidden .side-notch,
 body.intro-hidden .side-notch {
   transform: translate3d(150%, -50%, 0) !important;
   opacity: 0 !important;
   pointer-events: none !important;
 }
 
+html.intro-hidden .theme-toggle-btn,
 body.intro-hidden .theme-toggle-btn {
   transform: translate3d(0, 80px, 0) !important;
   opacity: 0 !important;
   pointer-events: none !important;
 }
 
+html.intro-hidden .clock,
 body.intro-hidden .clock {
   transform: translate3d(0, 80px, 0) !important;
   opacity: 0 !important;

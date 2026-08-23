@@ -265,18 +265,21 @@ function triggerPlay() {
 
 // Cinematic First-Load Initialization Choreography: Image -> Components -> Padding -> Song Start
 function playIntroAnimation() {
+  document.documentElement.classList.add("intro-no-padding", "intro-hidden");
   document.body.classList.add("intro-no-padding", "intro-hidden");
   void document.body.offsetHeight;
 
   // Stage 1: Components smoothly slide into frame with staggered spring curves
   requestAnimationFrame(() => {
     setTimeout(() => {
+      document.documentElement.classList.remove("intro-hidden");
       document.body.classList.remove("intro-hidden");
     }, 200);
   });
 
   // Stage 2: Frame padding smoothly settles into place
   setTimeout(() => {
+    document.documentElement.classList.remove("intro-no-padding");
     document.body.classList.remove("intro-no-padding");
   }, 1300);
 
