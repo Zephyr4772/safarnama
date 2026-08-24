@@ -197,32 +197,153 @@ els.seek.addEventListener("keydown", (e) => {
   render();
 });
 
-// Real-Time Live Presence Counter via WebSockets (Supabase Realtime)
+// Real-Time Live Presence Counter for Open Website Instances
 (function initRealtimePresence() {
   if (!els.online) return;
-  els.online.textContent = "1";
 
-  const SUPABASE_URL = "https://wzrdmsymvubgcvsmlhsq.supabase.co";
-  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind6cmRtc3ltdnViZ2N2c21saHNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MDk4NTI5MzksImV4cCI6MjAyNTQyODkzOX0.6Y3kO6gP2fK6N3W9S-VjT-mP0lY9W9G8k2z2x3a4b5c";
+  const tabId = "tab_" + Math.random().toString(36).slice(2, 10) + "_" + Date.now();
+  const STORAGE_KEY = "safrnaamaa_active_instances_v1";
+  const CHANNEL_NAME = "safrnaamaa_presence_channel";
+  const HEARTBEAT_INTERVAL = 1500;
+  const STALE_TIMEOUT = 4000;
 
-  if (window.supabase && window.supabase.createClient) {
+  let channel = null;
+
+  function getStoredInstances() {
+    try {
+      const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      const now = Date.now();
+      const valid = {};
+      for (const [id, time] of Object.entries(data)) {
+        if (now - time < STALE_TIMEOUT) {
+          valid[id] = time;
+        }
+      }
+      return valid;
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveStoredInstances(instances) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(instances));
+    } catch (e) {}
+  }
+
+  function updateDisplay(count) {
+    const finalCount = Math.max(1, count);
+    if (els.online && els.online.textContent !== String(finalCount)) {
+      els.online.textContent = String(finalCount);
+    }
+  }
+
+  function recalculateCount() {
+    const now = Date.now();
+    const stored = getStoredInstances();
+    stored[tabId] = now;
+    saveStoredInstances(stored);
+    const count = Object.keys(stored).length;
+    updateDisplay(count);
+    return stored;
+  }
+
+  function heartbeat() {
+    const now = Date.now();
+    const stored = recalculateCount();
+    if (channel) {
+      try {
+        channel.postMessage({ type: "heartbeat", tabId, timestamp: now });
+      } catch (e) {}
+    }
+  }
+
+  function cleanup() {
+    try {
+      const stored = getStoredInstances();
+      delete stored[tabId];
+      saveStoredInstances(stored);
+      if (channel) {
+        channel.postMessage({ type: "leave", tabId });
+      }
+    } catch (e) {}
+  }
+
+  // Cross-instance communication via BroadcastChannel
+  if (typeof BroadcastChannel !== "undefined") {
+    try {
+      channel = new BroadcastChannel(CHANNEL_NAME);
+      channel.onmessage = (event) => {
+        const data = event.data;
+        if (!data || !data.type) return;
+
+        if (data.type === "join" || data.type === "heartbeat") {
+          const stored = getStoredInstances();
+          stored[tabId] = Date.now();
+          saveStoredInstances(stored);
+          updateDisplay(Object.keys(stored).length);
+        } else if (data.type === "leave") {
+          const stored = getStoredInstances();
+          delete stored[data.tabId];
+          saveStoredInstances(stored);
+          updateDisplay(Object.keys(stored).length);
+        }
+      };
+    } catch (e) {}
+  }
+
+  // Fallback / sync with storage events across tabs & windows
+  window.addEventListener("storage", (e) => {
+    if (e.key === STORAGE_KEY) {
+      const stored = getStoredInstances();
+      updateDisplay(Object.keys(stored).length);
+    }
+  });
+
+  // 1. Register this instance in storage
+  recalculateCount();
+
+  // 2. Announce join to other open instances
+  if (channel) {
+    try {
+      channel.postMessage({ type: "join", tabId, timestamp: Date.now() });
+    } catch (e) {}
+  }
+
+  // 3. Keep-alive heartbeat & stale instance purging
+  setInterval(heartbeat, HEARTBEAT_INTERVAL);
+
+  // 4. Clean exit handlers on close/unload
+  window.addEventListener("beforeunload", cleanup);
+  window.addEventListener("pagehide", cleanup);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      heartbeat();
+    }
+  });
+
+  // 5. Optional WebSocket Presence Sync (if custom WebSocket or valid Supabase configured)
+  const SUPABASE_URL = window.SUPABASE_URL;
+  const SUPABASE_ANON_KEY = window.SUPABASE_ANON_KEY;
+
+  if (window.supabase && window.supabase.createClient && SUPABASE_URL && SUPABASE_ANON_KEY && !SUPABASE_URL.includes("wzrdmsymvubgcvsmlhsq")) {
     try {
       const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-      const userId = "usr_" + Math.random().toString(36).slice(2, 10);
       const room = client.channel("safrnaamaa_live_room", {
-        config: { presence: { key: userId } }
+        config: { presence: { key: tabId } }
       });
 
-      const updateCount = () => {
+      const updateWsCount = () => {
         const state = room.presenceState();
-        const count = Object.keys(state).length;
-        els.online.textContent = Math.max(1, count);
+        const wsCount = Object.keys(state).length;
+        const localCount = Object.keys(getStoredInstances()).length;
+        updateDisplay(Math.max(localCount, wsCount));
       };
 
       room
-        .on("presence", { event: "sync" }, updateCount)
-        .on("presence", { event: "join" }, updateCount)
-        .on("presence", { event: "leave" }, updateCount)
+        .on("presence", { event: "sync" }, updateWsCount)
+        .on("presence", { event: "join" }, updateWsCount)
+        .on("presence", { event: "leave" }, updateWsCount)
         .subscribe(async (status) => {
           if (status === "SUBSCRIBED") {
             await room.track({ online_at: Date.now() });
@@ -230,11 +351,9 @@ els.seek.addEventListener("keydown", (e) => {
         });
 
       window.addEventListener("beforeunload", () => {
-        room.untrack();
+        try { room.untrack(); } catch (e) {}
       });
-    } catch (e) {
-      console.log("Realtime presence active");
-    }
+    } catch (e) {}
   }
 })();
 
