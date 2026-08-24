@@ -222,6 +222,7 @@ a {
   font-size: 0.75rem;
   font-weight: 500;
   color: #111;
+  transition: color 0.3s ease;
 }
 
 .ping-wrap {
@@ -254,6 +255,7 @@ a {
 
 .dim {
   color: #666;
+  transition: color 0.3s ease;
 }
 
 .header-right {
@@ -891,6 +893,18 @@ html.dark .seek-fill {
 
 html.dark .seek-thumb {
   background: #fff;
+}
+
+html.dark .side-notch {
+  color: #fff;
+}
+
+html.dark .online-pill {
+  color: #f4f4f5;
+}
+
+html.dark .dim {
+  color: #a1a1aa;
 }
 
 /* First-Load Intro Choreography */
