@@ -197,17 +197,25 @@ els.seek.addEventListener("keydown", (e) => {
   render();
 });
 
-// Real-Time Live Presence Counter for Open Website Instances
+// Real-Time Live Presence Counter via WebSockets (Global & Local Multi-Instance Sync)
 (function initRealtimePresence() {
   if (!els.online) return;
 
-  const tabId = "tab_" + Math.random().toString(36).slice(2, 10) + "_" + Date.now();
+  const tabId = "usr_" + Math.random().toString(36).slice(2, 8) + "_" + Date.now().toString(36);
   const STORAGE_KEY = "safrnaamaa_active_instances_v1";
   const CHANNEL_NAME = "safrnaamaa_presence_channel";
-  const HEARTBEAT_INTERVAL = 1500;
-  const STALE_TIMEOUT = 4000;
+  const WS_TOPIC = "safrnaamaa/presence/live_v1";
+  const WS_ENDPOINTS = [
+    "wss://broker.emqx.io:8084/mqtt",
+    "wss://broker.hivemq.com:8884/mqtt"
+  ];
 
-  let channel = null;
+  const remotePeers = new Map();
+  remotePeers.set(tabId, Date.now());
+
+  let localChannel = null;
+  let wsClient = null;
+  let wsEndpointIndex = 0;
 
   function getStoredInstances() {
     try {
@@ -215,9 +223,7 @@ els.seek.addEventListener("keydown", (e) => {
       const now = Date.now();
       const valid = {};
       for (const [id, time] of Object.entries(data)) {
-        if (now - time < STALE_TIMEOUT) {
-          valid[id] = time;
-        }
+        if (now - time < 4000) valid[id] = time;
       }
       return valid;
     } catch (e) {
@@ -231,31 +237,190 @@ els.seek.addEventListener("keydown", (e) => {
     } catch (e) {}
   }
 
-  function updateDisplay(count) {
-    const finalCount = Math.max(1, count);
+  function updateDisplay() {
+    const now = Date.now();
+    for (const [id, lastSeen] of remotePeers.entries()) {
+      if (id !== tabId && now - lastSeen > 12000) {
+        remotePeers.delete(id);
+      }
+    }
+    const localCount = Object.keys(getStoredInstances()).length;
+    const globalCount = remotePeers.size;
+    const finalCount = Math.max(1, localCount, globalCount);
     if (els.online && els.online.textContent !== String(finalCount)) {
       els.online.textContent = String(finalCount);
     }
   }
 
-  function recalculateCount() {
-    const now = Date.now();
+  function recalculateLocal() {
     const stored = getStoredInstances();
-    stored[tabId] = now;
+    stored[tabId] = Date.now();
     saveStoredInstances(stored);
-    const count = Object.keys(stored).length;
-    updateDisplay(count);
+    updateDisplay();
     return stored;
   }
 
-  function heartbeat() {
-    const now = Date.now();
-    const stored = recalculateCount();
-    if (channel) {
+  // Native Lightweight WebSocket MQTT Client (Zero Dependencies)
+  function connectWebSocket() {
+    const endpoint = WS_ENDPOINTS[wsEndpointIndex % WS_ENDPOINTS.length];
+    let ws = null;
+    let pingTimer = null;
+
+    try {
+      ws = new WebSocket(endpoint, "mqtt");
+      ws.binaryType = "arraybuffer";
+    } catch (err) {
+      wsEndpointIndex++;
+      setTimeout(connectWebSocket, 3000);
+      return;
+    }
+
+    function encodeUtf8(str) { return new TextEncoder().encode(str); }
+    function decodeUtf8(buf) { return new TextDecoder().decode(buf); }
+    function buildLength(len) {
+      const bytes = [];
+      do {
+        let digit = len % 128;
+        len = Math.floor(len / 128);
+        if (len > 0) digit = digit | 0x80;
+        bytes.push(digit);
+      } while (len > 0);
+      return bytes;
+    }
+
+    ws.onopen = () => {
+      const proto = encodeUtf8("MQTT");
+      const cid = encodeUtf8(tabId);
+      const varHeader = [0x00, proto.length, ...proto, 0x04, 0x02, 0x00, 30];
+      const payload = [0x00, cid.length, ...cid];
+      const remaining = [...varHeader, ...payload];
+      const packet = new Uint8Array([0x10, ...buildLength(remaining.length), ...remaining]);
+      ws.send(packet.buffer);
+    };
+
+    ws.onmessage = (event) => {
+      const data = new Uint8Array(event.data);
+      const packetType = data[0] >> 4;
+
+      if (packetType === 2 && data[3] === 0) {
+        // CONNACK: Subscribe to topic
+        const tBuf = encodeUtf8(WS_TOPIC);
+        const subPayload = [0x00, 0x01, 0x00, tBuf.length, ...tBuf, 0x00];
+        const subPacket = new Uint8Array([0x82, ...buildLength(subPayload.length), ...subPayload]);
+        ws.send(subPacket.buffer);
+
+        // Announce our presence to all connected instances
+        publish({ event: "join", id: tabId });
+
+        // Keep-alive MQTT ping
+        pingTimer = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(new Uint8Array([0xC0, 0x00]).buffer);
+          }
+        }, 20000);
+      } else if (packetType === 3) {
+        // PUBLISH message received
+        try {
+          let offset = 1;
+          let multiplier = 1;
+          let remLen = 0;
+          while (offset < data.length) {
+            const digit = data[offset++];
+            remLen += (digit & 0x7F) * multiplier;
+            multiplier *= 128;
+            if ((digit & 0x80) === 0) break;
+          }
+          const topicLen = (data[offset] << 8) | data[offset + 1];
+          offset += 2 + topicLen;
+          const payloadStr = decodeUtf8(data.slice(offset));
+          const msg = JSON.parse(payloadStr);
+
+          if (msg && msg.id && msg.id !== tabId) {
+            if (msg.event === "join") {
+              remotePeers.set(msg.id, Date.now());
+              // Reply so the newly joined client discovers us immediately
+              publish({ event: "pong", id: tabId });
+            } else if (msg.event === "pong" || msg.event === "ping") {
+              remotePeers.set(msg.id, Date.now());
+            } else if (msg.event === "leave") {
+              remotePeers.delete(msg.id);
+            }
+            updateDisplay();
+          }
+        } catch (e) {}
+      }
+    };
+
+    function publish(obj) {
+      if (ws.readyState !== WebSocket.OPEN) return;
       try {
-        channel.postMessage({ type: "heartbeat", tabId, timestamp: now });
+        const tBuf = encodeUtf8(WS_TOPIC);
+        const pBuf = encodeUtf8(JSON.stringify(obj));
+        const rem = [0x00, tBuf.length, ...tBuf, ...pBuf];
+        const pubPacket = new Uint8Array([0x30, ...buildLength(rem.length), ...rem]);
+        ws.send(pubPacket.buffer);
       } catch (e) {}
     }
+
+    ws.onclose = () => {
+      clearInterval(pingTimer);
+      wsEndpointIndex++;
+      setTimeout(connectWebSocket, 3000);
+    };
+
+    ws.onerror = () => {
+      try { ws.close(); } catch (e) {}
+    };
+
+    wsClient = {
+      publish,
+      close: () => {
+        try {
+          publish({ event: "leave", id: tabId });
+          ws.close();
+        } catch (e) {}
+      }
+    };
+  }
+
+  // Cross-Tab Local BroadcastChannel
+  if (typeof BroadcastChannel !== "undefined") {
+    try {
+      localChannel = new BroadcastChannel(CHANNEL_NAME);
+      localChannel.onmessage = (event) => {
+        const data = event.data;
+        if (!data || !data.type) return;
+        if (data.type === "join" || data.type === "heartbeat") {
+          const stored = getStoredInstances();
+          stored[tabId] = Date.now();
+          saveStoredInstances(stored);
+          updateDisplay();
+        } else if (data.type === "leave") {
+          const stored = getStoredInstances();
+          delete stored[data.tabId];
+          saveStoredInstances(stored);
+          updateDisplay();
+        }
+      };
+      localChannel.postMessage({ type: "join", tabId, timestamp: Date.now() });
+    } catch (e) {}
+  }
+
+  window.addEventListener("storage", (e) => {
+    if (e.key === STORAGE_KEY) {
+      updateDisplay();
+    }
+  });
+
+  function heartbeat() {
+    recalculateLocal();
+    if (localChannel) {
+      try { localChannel.postMessage({ type: "heartbeat", tabId, timestamp: Date.now() }); } catch (e) {}
+    }
+    if (wsClient) {
+      wsClient.publish({ event: "ping", id: tabId });
+    }
+    updateDisplay();
   }
 
   function cleanup() {
@@ -263,57 +428,19 @@ els.seek.addEventListener("keydown", (e) => {
       const stored = getStoredInstances();
       delete stored[tabId];
       saveStoredInstances(stored);
-      if (channel) {
-        channel.postMessage({ type: "leave", tabId });
+      if (localChannel) {
+        localChannel.postMessage({ type: "leave", tabId });
+      }
+      if (wsClient) {
+        wsClient.close();
       }
     } catch (e) {}
   }
 
-  // Cross-instance communication via BroadcastChannel
-  if (typeof BroadcastChannel !== "undefined") {
-    try {
-      channel = new BroadcastChannel(CHANNEL_NAME);
-      channel.onmessage = (event) => {
-        const data = event.data;
-        if (!data || !data.type) return;
+  recalculateLocal();
+  connectWebSocket();
+  setInterval(heartbeat, 3000);
 
-        if (data.type === "join" || data.type === "heartbeat") {
-          const stored = getStoredInstances();
-          stored[tabId] = Date.now();
-          saveStoredInstances(stored);
-          updateDisplay(Object.keys(stored).length);
-        } else if (data.type === "leave") {
-          const stored = getStoredInstances();
-          delete stored[data.tabId];
-          saveStoredInstances(stored);
-          updateDisplay(Object.keys(stored).length);
-        }
-      };
-    } catch (e) {}
-  }
-
-  // Fallback / sync with storage events across tabs & windows
-  window.addEventListener("storage", (e) => {
-    if (e.key === STORAGE_KEY) {
-      const stored = getStoredInstances();
-      updateDisplay(Object.keys(stored).length);
-    }
-  });
-
-  // 1. Register this instance in storage
-  recalculateCount();
-
-  // 2. Announce join to other open instances
-  if (channel) {
-    try {
-      channel.postMessage({ type: "join", tabId, timestamp: Date.now() });
-    } catch (e) {}
-  }
-
-  // 3. Keep-alive heartbeat & stale instance purging
-  setInterval(heartbeat, HEARTBEAT_INTERVAL);
-
-  // 4. Clean exit handlers on close/unload
   window.addEventListener("beforeunload", cleanup);
   window.addEventListener("pagehide", cleanup);
   document.addEventListener("visibilitychange", () => {
