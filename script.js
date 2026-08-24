@@ -321,40 +321,6 @@ els.seek.addEventListener("keydown", (e) => {
       heartbeat();
     }
   });
-
-  // 5. Optional WebSocket Presence Sync (if custom WebSocket or valid Supabase configured)
-  const SUPABASE_URL = window.SUPABASE_URL;
-  const SUPABASE_ANON_KEY = window.SUPABASE_ANON_KEY;
-
-  if (window.supabase && window.supabase.createClient && SUPABASE_URL && SUPABASE_ANON_KEY && !SUPABASE_URL.includes("wzrdmsymvubgcvsmlhsq")) {
-    try {
-      const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-      const room = client.channel("safrnaamaa_live_room", {
-        config: { presence: { key: tabId } }
-      });
-
-      const updateWsCount = () => {
-        const state = room.presenceState();
-        const wsCount = Object.keys(state).length;
-        const localCount = Object.keys(getStoredInstances()).length;
-        updateDisplay(Math.max(localCount, wsCount));
-      };
-
-      room
-        .on("presence", { event: "sync" }, updateWsCount)
-        .on("presence", { event: "join" }, updateWsCount)
-        .on("presence", { event: "leave" }, updateWsCount)
-        .subscribe(async (status) => {
-          if (status === "SUBSCRIBED") {
-            await room.track({ online_at: Date.now() });
-          }
-        });
-
-      window.addEventListener("beforeunload", () => {
-        try { room.untrack(); } catch (e) {}
-      });
-    } catch (e) {}
-  }
 })();
 
 const devanagariDigits = ["०", "१", "२", "३", "४", "५", "६", "७", "८", "९"];
